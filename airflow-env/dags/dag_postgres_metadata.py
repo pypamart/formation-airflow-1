@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 
+import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -78,6 +79,21 @@ def insert_current_execution_metadata(**context):
     )
 
 
+def extract_and_filter_metadata(**context):
+    """Récupère les données de métadonnées, les affiche puis filtre par DAG ID."""
+    target_dag_id = "dag_postgres_metadata"
+    hook = PostgresHook(postgres_conn_id="postgres_localhost")
+    records = hook.get_records(f"SELECT execution_date, dag_id FROM {TABLE_NAME} ORDER BY execution_date;")
+
+    df = pd.DataFrame(records, columns=["execution_date", "dag_id"])
+    print("Données complètes :")
+    print(df.to_string(index=False))
+
+    filtered_df = df[df["dag_id"] == target_dag_id].copy()
+    print(f"\nDonnées filtrées pour dag_id='{target_dag_id}' :")
+    print(filtered_df.to_string(index=False))
+
+
 default_args = {
     "owner": "airflow",
     "retries": 3,
@@ -120,4 +136,9 @@ with DAG(
         python_callable=insert_current_execution_metadata,
     )
 
-    ensure_metadata_table >> delete_execution_metadata >> insert_execution_metadata
+    extract_metadata = PythonOperator(
+        task_id="extract_metadata",
+        python_callable=extract_and_filter_metadata,
+    )
+
+    ensure_metadata_table >> delete_execution_metadata >> insert_execution_metadata >> extract_metadata
