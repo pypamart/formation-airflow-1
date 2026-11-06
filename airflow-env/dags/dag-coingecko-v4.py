@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 import logging
+import sqlite3
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -10,11 +12,30 @@ from airflow.decorators import dag, task
 logger = logging.getLogger(__name__)
 
 COINGECKO_MARKET_CHART_URL = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+DB_PATH = Path(__file__).resolve().parents[1] / "bitcoin_history.db"
 
 
 @task
 def extract_bitcoin_price():
-    """Récupère 20 jours d'historique pour calculer un RSI basé sur les valeurs précédentes."""
+    """Lit l'historique dans SQLite en priorité, puis requête CoinGecko seulement si la table est vide."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bitcoin_history_prices (
+            timestamp_ms INTEGER PRIMARY KEY,
+            price_usd REAL NOT NULL
+        )
+        """
+    )
+
+    existing_rows = conn.execute(
+        "SELECT timestamp_ms, price_usd FROM bitcoin_history_prices ORDER BY timestamp_ms"
+    ).fetchall()
+    conn.close()
+
+    if existing_rows:
+        return [[timestamp_ms, float(price_usd)] for timestamp_ms, price_usd in existing_rows]
+
     params = {
         "vs_currency": "usd",
         "days": "20",
@@ -29,6 +50,13 @@ def extract_bitcoin_price():
 
     if not prices:
         raise ValueError("Aucun prix historique retourné pour le Bitcoin sur la période demandée.")
+
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.executemany(
+            "INSERT OR REPLACE INTO bitcoin_history_prices (timestamp_ms, price_usd) VALUES (?, ?)",
+            [(int(timestamp_ms), float(price_usd)) for timestamp_ms, price_usd in prices],
+        )
+        conn.commit()
 
     return prices
 
